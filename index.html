@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ScalperBot Pro - Trading Dashboard</title>
+    <title>AgoyCapital Pro - Trading Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -170,7 +170,7 @@
                     <i data-lucide="trending-up" class="w-5 h-5 text-white"></i>
                 </div>
                 <div>
-                    <h1 class="text-lg font-bold text-white leading-none">ScalperBot <span class="text-brand-400">Pro</span></h1>
+                    <h1 class="text-lg font-bold text-white leading-none">AgoyCapital <span class="text-brand-400">Pro</span></h1>
                     <p class="text-[10px] text-dark-400 font-mono">v3.2.1 • 1M Scalping Engine</p>
                 </div>
             </div>
@@ -188,13 +188,6 @@
     </header>
 
     <!-- Market Ticker -->
-    <div class="market-ticker border-b border-dark-800 py-2 overflow-hidden">
-        <div class="max-w-[1440px] mx-auto px-4 flex items-center gap-6 text-xs font-mono">
-            <div class="flex items-center gap-2">
-                <span class="text-dark-400">USTEC</span>
-                <span class="text-white font-semibold" id="tickerUSTEC">21,845.50</span>
-                <span class="text-brand-400" id="tickerUSTECChange">+0.32%</span>
-            </div>
             <div class="flex items-center gap-2">
                 <span class="text-dark-400">XAUUSD</span>
                 <span class="text-white font-semibold" id="tickerXAUUSD">2,341.80</span>
@@ -222,7 +215,7 @@
                         <h3 class="text-sm font-semibold text-white">Broker</h3>
                     </div>
                     <select id="brokerSelect" class="w-full mb-3">
-                        <option value="simulator">Simulator (Offline)</option>
+                        <option value="simulator">BackTest (Offline)</option>
                         <option value="deriv">Deriv (Live/Demo)</option>
                         <option value="exness">Exness (Simulated)</option>
                     </select>
