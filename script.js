@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScalperBot Pro - Trading Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f0fdf4',
+                            100: '#dcfce7',
+                            200: '#bbf7d0',
+                            300: '#86efac',
+                            400: '#4ade80',
+                            500: '#22c55e',
+                            600: '#16a34a',
+                            700: '#15803d',
+                            800: '#166534',
+                            900: '#14532d',
+                        },
+                        dark: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            200: '#e2e8f0',
+                            300: '#cbd5e1',
+                            400: '#94a3b8',
+                            500: '#64748b',
+                            600: '#475569',
+                            700: '#334155',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        * { scrollbar-width: thin; scrollbar-color: #334155 #0f172a; }
+        *::-webkit-scrollbar { width: 6px; }
+        *::-webkit-scrollbar-track { background: #0f172a; }
+        *::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        
+        body { background: #020617; font-family: 'Inter', sans-serif; }
+        
+        .glow-green { box-shadow: 0 0 20px rgba(34, 197, 94, 0.15); }
+        .glow-red { box-shadow: 0 0 20px rgba(239, 68, 68, 0.15); }
+        .glow-blue { box-shadow: 0 0 20px rgba(59, 130, 246, 0.15); }
+        
+        .card {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            border: 1px solid #334155;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+        }
+        .card:hover { border-color: #475569; }
+        
+        .pulse-dot {
+            animation: pulse-dot 2s infinite;
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        
+        .ticker-scroll {
+            animation: ticker 0.5s ease-in-out;
+        }
+        @keyframes ticker {
+            0% { transform: translateY(10px); opacity: 0; }
+            100% { transform: translateY(0); opacity: 1; }
+        }
+        
+        .trade-row-enter {
+            animation: slideIn 0.4s ease-out;
+        }
+        @keyframes slideIn {
+            0% { transform: translateX(-20px); opacity: 0; }
+            100% { transform: translateX(0); opacity: 1; }
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            transition: all 0.2s ease;
+        }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(34,197,94,0.3); }
+        .btn-primary:active { transform: translateY(0); }
+        
+        .btn-danger {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            transition: all 0.2s ease;
+        }
+        .btn-danger:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(239,68,68,0.3); }
+        
+        .stat-card {
+            background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid #334155;
+        }
+        
+        .speech-bubble {
+            position: relative;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .speech-bubble::after {
+            content: '';
+            position: absolute;
+            bottom: -6px;
+            left: 20px;
+            width: 12px;
+            height: 12px;
+            background: #1e293b;
+            border-right: 1px solid #334155;
+            border-bottom: 1px solid #334155;
+            transform: rotate(45deg);
+        }
+        
+        .market-ticker {
+            background: linear-gradient(90deg, #0f172a, #1e293b, #0f172a);
+        }
+        
+        input[type="number"], select {
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #f8fafc;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            transition: border-color 0.2s;
+        }
+        input[type="number"]:focus, select:focus {
+            outline: none;
+            border-color: #22c55e;
+            box-shadow: 0 0 0 2px rgba(34,197,94,0.1);
+        }
+        
+        .tab-active {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            color: white;
+        }
+        
+        .progress-bar {
+            background: linear-gradient(90deg, #22c55e, #16a34a);
+            transition: width 0.5s ease;
+        }
+    </style>
+</head>
+<body class="min-h-screen text-gray-100">
+
+    <!-- Header -->
+    <header class="border-b border-dark-700 bg-dark-950/80 backdrop-blur-xl sticky top-0 z-50">
+        <div class="max-w-[1440px] mx-auto px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center">
+                    <i data-lucide="trending-up" class="w-5 h-5 text-white"></i>
+                </div>
+                <div>
+                    <h1 class="text-lg font-bold text-white leading-none">ScalperBot <span class="text-brand-400">Pro</span></h1>
+                    <p class="text-[10px] text-dark-400 font-mono">v3.2.1 • 1M Scalping Engine</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <div id="connectionStatus" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-800 border border-dark-700">
+                    <span class="w-2 h-2 rounded-full bg-red-500 pulse-dot" id="statusDot"></span>
+                    <span class="text-xs font-mono text-dark-400" id="statusText">OFFLINE</span>
+                </div>
+                <button id="toggleBot" class="btn-primary px-5 py-2 rounded-lg text-sm font-semibold text-white flex items-center gap-2">
+                    <i data-lucide="play" class="w-4 h-4" id="toggleIcon"></i>
+                    <span id="toggleText">Start Bot</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Market Ticker -->
+    <div class="market-ticker border-b border-dark-800 py-2 overflow-hidden">
+        <div class="max-w-[1440px] mx-auto px-4 flex items-center gap-6 text-xs font-mono">
+            <div class="flex items-center gap-2">
+                <span class="text-dark-400">USTEC</span>
+                <span class="text-white font-semibold" id="tickerUSTEC">21,845.50</span>
+                <span class="text-brand-400" id="tickerUSTECChange">+0.32%</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-dark-400">XAUUSD</span>
+                <span class="text-white font-semibold" id="tickerXAUUSD">2,341.80</span>
+                <span class="text-brand-400" id="tickerXAUUSDChange">+0.15%</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-dark-400">BTCUSD</span>
+                <span class="text-white font-semibold" id="tickerBTCUSD">67,245.00</span>
+                <span class="text-red-400" id="tickerBTCUSDChange">-0.08%</span>
+            </div>
+            <span class="text-dark-600 ml-auto" id="clockDisplay">--:--:--</span>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <main class="max-w-[1440px] mx-auto px-4 py-4">
+        <div class="grid grid-cols-12 gap-4">
+
+            <!-- Left Sidebar: Settings -->
+            <aside class="col-span-12 lg:col-span-3 space-y-4">
+                <!-- Broker Connection -->
+                <div class="card p-4">
+                    <div class="flex items-center gap-2 mb-3">
+                        <i data-lucide="plug" class="w-4 h-4 text-cyan-400"></i>
+                        <h3 class="text-sm font-semibold text-white">Broker</h3>
+                    </div>
+                    <select id="brokerSelect" class="w-full mb-3">
+                        <option value="simulator">Simulator (Offline)</option>
+                        <option value="deriv">Deriv (Live/Demo)</option>
+                        <option value="exness">Exness (Simulated)</option>
+                    </select>
+                    
+                    <!-- Deriv Connection -->
+                    <div id="derivSettings" class="hidden space-y-3">
+                        <!-- Connection Guide -->
+                        <div class="bg-dark-900 rounded-lg p-3 border border-brand-700/30">
+                            <p class="text-xs text-green-300 font-semibold mb-1.5">📋 How to connect your Deriv account:</p>
+                            <ol class="text-[10px] text-dark-300 space-y-1 list-decimal list-inside leading-relaxed">
+                                <li>Log into <a href="https://app.deriv.com" target="_blank" rel="noopener" class="text-brand-400 hover:text-brand-300 underline">Deriv.com</a></li>
+                                <li>Go to <b>Settings → API Token</b></li>
+                                <li>Create token with <span class="text-yellow-300">Read, Trade, Payments</span> scope</li>
+                                <li>Copy &amp; paste the token above</li>
+                                <li>Select Demo or Real, then click Connect</li>
+                            </ol>
+                            <div class="mt-2 pt-2 border-t border-dark-700">
+                                <p class="text-[9px] text-dark-500">⚠️ Demo accounts use virtual funds. Switch to Real only when ready.</p>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">Deriv API Token</label>
+                            <div class="relative">
+                                <input type="password" id="derivToken" placeholder="Paste your Deriv API token" class="w-full text-[11px] pr-8">
+                                <button onclick="toggleTokenVisibility()" class="absolute right-2 top-1/2 -translate-y-1/2 text-dark-400 hover:text-white transition" title="Show/hide token">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="tokenEyeIcon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">App ID</label>
+                            <input type="text" id="derivAppId" value="1089" class="w-full text-[11px]">
+                            <p class="text-[9px] text-dark-500 mt-1">Use 1089 unless you have your own registered app</p>
+                        </div>
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">Account Type</label>
+                            <select id="derivAccountType" class="w-full text-[11px]">
+                                <option value="demo">Demo Account (Virtual Money)</option>
+                                <option value="real">Real Account (Real Money)</option>
+                            </select>
+                        </div>
+                        <button id="connectDeriv" class="w-full btn-primary px-4 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center justify-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+                            Connect to Deriv
+                        </button>
+                        <div id="derivStatus" class="text-xs font-mono text-dark-400 text-center"></div>
+                        <div id="derivAccountInfo" class="hidden mt-2 bg-brand-900/30 border border-brand-700/30 rounded-lg p-2">
+                            <div class="flex items-center justify-between text-xs">
+                                <span class="text-dark-400">Login ID</span>
+                                <span class="font-mono text-white" id="derivLoginDisplay">—</span>
+                            </div>
+                            <div class="flex items-center justify-between text-xs mt-1">
+                                <span class="text-dark-400">Balance</span>
+                                <span class="font-mono text-brand-400" id="derivBalanceDisplay">—</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Exness Info -->
+                    <div id="exnessSettings" class="hidden space-y-3">
+                        <div class="bg-dark-900 rounded-lg p-3 border border-yellow-800/30">
+                            <div class="flex items-center gap-2 mb-1">
+                                <i data-lucide="info" class="w-3 h-3 text-yellow-400"></i>
+                                <span class="text-xs text-yellow-300 font-semibold">Exness Mode</span>
+                            </div>
+                            <p class="text-[10px] text-dark-400 leading-relaxed">Exness uses MetaTrader (MT4/MT5) which requires a desktop EA. This mode uses Exness-specific spreads, pip values & volatility for accurate simulation. Export the EA code to run on Exness MT4/MT5.</p>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2 text-xs">
+                            <div class="bg-dark-900 rounded-lg p-2">
+                                <span class="text-dark-400">Avg Spread</span>
+                                <p class="text-white font-mono font-semibold" id="exnessSpread">—</p>
+                            </div>
+                            <div class="bg-dark-900 rounded-lg p-2">
+                                <span class="text-dark-400">Execution</span>
+                                <p class="text-white font-mono font-semibold text-xs">Market</p>
+                            </div>
+                        </div>
+                        <button onclick="showEAModal()" class="w-full bg-gradient-to-r from-yellow-600 to-yellow-700 hover:from-yellow-500 hover:to-yellow-600 px-4 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center justify-center gap-2 transition-all">
+                            <i data-lucide="file-code-2" class="w-4 h-4"></i>
+                            Export MT4 EA Code
+                        </button>
+                        <div class="bg-dark-900 rounded-lg p-2 border border-dark-700">
+                            <p class="text-[10px] text-dark-400 text-center">💡 Copy the EA code → Open MetaEditor → Paste → Compile → Attach to 1M chart</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Simulator Info -->
+                    <div id="simulatorSettings" class="space-y-3">
+                        <div class="bg-dark-900 rounded-lg p-3 border border-blue-800/30">
+                            <div class="flex items-center gap-2 mb-1">
+                                <i data-lucide="cpu" class="w-3 h-3 text-blue-400"></i>
+                                <span class="text-xs text-blue-300 font-semibold">Simulator Mode</span>
+                            </div>
+                            <p class="text-[10px] text-dark-400 leading-relaxed">Prices are generated algorithmically with realistic volatility, spreads, and market microstructure. No real money at risk.</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Connection indicator -->
+                    <div id="brokerConnectionInfo" class="mt-3 pt-3 border-t border-dark-700">
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="text-dark-400">Data Source</span>
+                            <span class="font-mono" id="dataSourceLabel">
+                                <span class="text-dark-400">Internal Simulator</span>
+                            </span>
+                        </div>
+                        <div class="flex items-center justify-between text-xs mt-1">
+                            <span class="text-dark-400">Latency</span>
+                            <span class="font-mono" id="latencyLabel">
+                                <span class="text-dark-400">N/A</span>
+                            </span>
+                        </div>
+                        <div class="flex items-center justify-between text-xs mt-1" id="balanceRow" style="display:none;">
+                            <span class="text-dark-400">Balance</span>
+                            <span class="font-mono text-brand-400" id="balanceLabel">—</span>
+                        </div>
+                        <div class="flex items-center justify-between text-xs mt-1" id="loginRow" style="display:none;">
+                            <span class="text-dark-400">Account</span>
+                            <span class="font-mono text-dark-300" id="loginLabel">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Symbol Selection -->
+                <div class="card p-4">
+                    <div class="flex items-center gap-2 mb-3">
+                        <i data-lucide="coins" class="w-4 h-4 text-brand-400"></i>
+                        <h3 class="text-sm font-semibold text-white">Symbol</h3>
+                    </div>
+                    <select id="symbolSelect" class="w-full">
+                        <option value="USTEC">USTEC (Nas100)</option>
+                        <option value="XAUUSD">XAUUSD (Gold)</option>
+                        <option value="BTCUSD">BTCUSD (Bitcoin)</option>
+                    </select>
+                    <div class="mt-3 grid grid-cols-2 gap-2 text-xs">
+                        <div class="bg-dark-900 rounded-lg p-2">
+                            <span class="text-dark-400">Spread</span>
+                            <p class="text-white font-mono font-semibold" id="spreadDisplay">1.5</p>
+                        </div>
+                        <div class="bg-dark-900 rounded-lg p-2">
+                            <span class="text-dark-400">Pip Value</span>
+                            <p class="text-white font-mono font-semibold" id="pipValueDisplay">$1.00</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trading Parameters -->
+                <div class="card p-4">
+                    <div class="flex items-center gap-2 mb-3">
+                        <i data-lucide="settings-2" class="w-4 h-4 text-blue-400"></i>
+                        <h3 class="text-sm font-semibold text-white">Parameters</h3>
+                    </div>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">Lot Size</label>
+                            <input type="number" id="lotSize" value="0.1" step="0.01" min="0.01" class="w-full">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-xs text-dark-400 mb-1 block">Stop Loss (pips)</label>
+                                <input type="number" id="stopLoss" value="15" min="1" class="w-full">
+                            </div>
+                            <div>
+                                <label class="text-xs text-dark-400 mb-1 block">Take Profit (pips)</label>
+                                <input type="number" id="takeProfit" value="10" min="1" class="w-full">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">Trailing Stop (pips)</label>
+                            <input type="number" id="trailingStop" value="5" min="1" class="w-full">
+                        </div>
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">Trailing Step (pips)</label>
+                            <input type="number" id="trailingStep" value="3" min="1" class="w-full">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-xs text-dark-400 mb-1 block">Max Spread</label>
+                                <input type="number" id="maxSpread" value="3" min="0.1" step="0.1" class="w-full">
+                            </div>
+                            <div>
+                                <label class="text-xs text-dark-400 mb-1 block">Max Trades/Day</label>
+                                <input type="number" id="maxTrades" value="20" min="1" class="w-full">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Strategy Settings -->
+                <div class="card p-4">
+                    <div class="flex items-center gap-2 mb-3">
+                        <i data-lucide="brain" class="w-4 h-4 text-purple-400"></i>
+                        <h3 class="text-sm font-semibold text-white">Strategy</h3>
+                    </div>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">EMA Fast</label>
+                            <input type="number" id="emaFast" value="5" min="1" class="w-full">
+                        </div>
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">EMA Slow</label>
+                            <input type="number" id="emaSlow" value="13" min="2" class="w-full">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-xs text-dark-400 mb-1 block">RSI Period</label>
+                                <input type="number" id="rsiPeriod" value="7" min="2" class="w-full">
+                            </div>
+                            <div>
+                                <label class="text-xs text-dark-400 mb-1 block">RSI Levels</label>
+                                <input type="number" id="rsiLevel" value="30" min="5" max="50" class="w-full">
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-xs text-dark-400">MACD Filter</label>
+                            <button id="macdToggle" class="w-10 h-5 bg-brand-600 rounded-full relative cursor-pointer transition-colors" data-enabled="true">
+                                <span class="absolute top-0.5 left-5 w-4 h-4 bg-white rounded-full transition-all shadow"></span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Stats -->
+                <div class="card p-4">
+                    <div class="flex items-center gap-2 mb-3">
+                        <i data-lucide="shield-check" class="w-4 h-4 text-yellow-400"></i>
+                        <h3 class="text-sm font-semibold text-white">Risk Manager</h3>
+                    </div>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">Max Daily Loss ($)</label>
+                            <input type="number" id="maxDailyLoss" value="50" min="1" class="w-full">
+                        </div>
+                        <div>
+                            <label class="text-xs text-dark-400 mb-1 block">Max Daily Profit ($)</label>
+                            <input type="number" id="maxDailyProfit" value="100" min="1" class="w-full">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-xs text-dark-400">Break Even Lock</label>
+                            <button id="beLockToggle" class="w-10 h-5 bg-brand-600 rounded-full relative cursor-pointer transition-colors" data-enabled="true">
+                                <span class="absolute top-0.5 left-5 w-4 h-4 bg-white rounded-full transition-all shadow"></span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Center: Chart & Info -->
+            <section class="col-span-12 lg:col-span-6 space-y-4">
+                <!-- Active Position -->
+                <div class="card p-4" id="activePositionCard">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <i data-lucide="activity" class="w-4 h-4 text-brand-400"></i>
+                            <h3 class="text-sm font-semibold text-white">Active Position</h3>
+                        </div>
+                        <span class="text-xs font-mono text-dark-400" id="posDuration">No position</span>
+                    </div>
+                    <div id="activePositionContent" class="text-center py-4">
+                        <i data-lucide="inbox" class="w-8 h-8 text-dark-600 mx-auto mb-2"></i>
+                        <p class="text-dark-400 text-sm">No active trades</p>
+                    </div>
+                </div>
+
+                <!-- Price Chart -->
+                <div class="card p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <i data-lucide="candlestick-chart" class="w-4 h-4 text-brand-400"></i>
+                            <h3 class="text-sm font-semibold text-white" id="chartTitle">USTEC • 1M</h3>
+                        </div>
+                        <div class="flex items-center gap-1">
+                            <button class="px-2 py-1 rounded text-[10px] font-mono bg-dark-900 text-dark-400 hover:text-white transition" onclick="setChartMode('line')" id="btnLine">LINE</button>
+                            <button class="px-2 py-1 rounded text-[10px] font-mono bg-brand-600 text-white" onclick="setChartMode('candle')" id="btnCandle">CANDLE</button>
+                        </div>
+                    </div>
+                    <div class="relative" style="height: 320px;">
+                        <canvas id="priceChart"></canvas>
+                    </div>
+                    <div class="flex items-center justify-between mt-2 text-[10px] font-mono text-dark-500">
+                        <span id="chartInfo">200 bars • 1M timeframe</span>
+                        <span id="lastUpdate">Updated: --:--:--</span>
+                    </div>
+                </div>
+
+                <!-- Signal Log -->
+                <div class="card p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <i data-lucide="zap" class="w-4 h-4 text-yellow-400"></i>
+                            <h3 class="text-sm font-semibold text-white">Signal Log</h3>
+                        </div>
+                        <button onclick="clearSignals()" class="text-[10px] text-dark-400 hover:text-white transition">Clear</button>
+                    </div>
+                    <div id="signalLog" class="space-y-2 max-h-[180px] overflow-y-auto text-xs font-mono">
+                        <div class="text-center py-4 text-dark-500">
+                            <i data-lucide="radar" class="w-6 h-6 mx-auto mb-1 opacity-30"></i>
+                            <p>Waiting for signals...</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Sidebar: Stats & Trades -->
+            <aside class="col-span-12 lg:col-span-3 space-y-4">
+                <!-- P&L Card -->
+                <div class="stat-card rounded-xl p-4 glow-green">
+                    <div class="flex items-center gap-2 mb-2">
+                        <i data-lucide="dollar-sign" class="w-4 h-4 text-brand-400"></i>
+                        <h3 class="text-sm font-semibold text-white">Session P&L</h3>
+                    </div>
+                    <p class="text-3xl font-bold font-mono text-brand-400" id="sessionPnL">$0.00</p>
+                    <div class="grid grid-cols-2 gap-2 mt-3">
+                        <div class="bg-dark-900 rounded-lg p-2">
+                            <span class="text-[10px] text-dark-400">Win Rate</span>
+                            <p class="text-sm font-mono font-semibold text-white" id="winRate">0%</p>
+                        </div>
+                        <div class="bg-dark-900 rounded-lg p-2">
+                            <span class="text-[10px] text-dark-400">Profit Factor</span>
+                            <p class="text-sm font-mono font-semibold text-white" id="profitFactor">0.00</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stats Grid -->
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="stat-card rounded-xl p-3 text-center">
+                        <span class="text-[10px] text-dark-400">Trades</span>
+                        <p class="text-lg font-bold font-mono text-white" id="totalTradesStat">0</p>
+                    </div>
+                    <div class="stat-card rounded-xl p-3 text-center">
+                        <span class="text-[10px] text-dark-400">Wins</span>
+                        <p class="text-lg font-bold font-mono text-brand-400" id="winsStat">0</p>
+                    </div>
+                    <div class="stat-card rounded-xl p-3 text-center">
+                        <span class="text-[10px] text-dark-400">Losses</span>
+                        <p class="text-lg font-bold font-mono text-red-400" id="lossesStat">0</p>
+                    </div>
+                    <div class="stat-card rounded-xl p-3 text-center">
+                        <span class="text-[10px] text-dark-400">Avg Win</span>
+                        <p class="text-lg font-bold font-mono text-brand-400" id="avgWinStat">$0</p>
+                    </div>
+                </div>
+
+                <!-- Daily Progress -->
+                <div class="card p-4">
+                    <div class="flex items-center gap-2 mb-3">
+                        <i data-lucide="target" class="w-4 h-4 text-brand-400"></i>
+                        <h3 class="text-sm font-semibold text-white">Daily Target</h3>
+                    </div>
+                    <div class="space-y-2">
+                        <div>
+                            <div class="flex justify-between text-[10px] text-dark-400 mb-1">
+                                <span>Profit Target</span>
+                                <span id="profitProgress">0%</span>
+                            </div>
+                            <div class="w-full h-2 bg-dark-900 rounded-full overflow-hidden">
+                                <div class="progress-bar h-full rounded-full" id="profitBar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-[10px] text-dark-400 mb-1">
+                                <span>Loss Limit</span>
+                                <span id="lossProgress">0%</span>
+                            </div>
+                            <div class="w-full h-2 bg-dark-900 rounded-full overflow-hidden">
+                                <div class="h-full rounded-full bg-red-500 transition-all duration-500" id="lossBar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trade History -->
+                <div class="card p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <i data-lucide="history" class="w-4 h-4 text-blue-400"></i>
+                            <h3 class="text-sm font-semibold text-white">Trade History</h3>
+                        </div>
+                        <button onclick="clearHistory()" class="text-[10px] text-dark-400 hover:text-white transition">Clear</button>
+                    </div>
+                    <div id="tradeHistory" class="space-y-2 max-h-[280px] overflow-y-auto">
+                        <div class="text-center py-4 text-dark-500 text-xs">
+                            <i data-lucide="scroll-text" class="w-6 h-6 mx-auto mb-1 opacity-30"></i>
+                            <p>No trades yet</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Equity Curve Mini -->
+                <div class="card p-4">
+                    <div class="flex items-center gap-2 mb-2">
+                        <i data-lucide="line-chart" class="w-4 h-4 text-brand-400"></i>
+                        <h3 class="text-sm font-semibold text-white">Equity Curve</h3>
+                    </div>
+                    <div style="height: 100px;">
+                        <canvas id="equityChart"></canvas>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </main>
+
+    <!-- Toast Container -->
+    <div id="toastContainer" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+
+    <script src="broker-api.js"></script>
+    <script src="script.js"></script>
+    <script>
+        lucide.createIcons();
+    </script>
+    
+<script src="https://deepsite.hf.co/deepsite-badge.js"></script>
+</body>
+</html>
