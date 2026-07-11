@@ -81,7 +81,7 @@
     <div class="bg-dark-900 border-b border-dark-800 px-4 py-2">
         <div class="max-w-[1440px] mx-auto flex items-center gap-6 text-xs font-mono">
             <div class="flex items-center gap-2">
-                <span class="text-dark-400 font-bold" id="currentSymbolLabel">USTEC</span>
+                <span class="text-dark-400 font-bold" id="currentSymbolLabel">R_100</span>
                 <span class="text-white font-semibold text-sm" id="tickerPriceDisplay">0.00</span>
                 <span class="text-brand-400" id="tickerChangeDisplay">+0.00%</span>
             </div>
@@ -109,6 +109,7 @@
                             <ol class="text-[10px] text-dark-300 space-y-1 list-decimal list-inside leading-relaxed">
                                 <li>Masuk ke <a href="https://app.deriv.com" target="_blank" class="text-brand-400 underline">Deriv.com</a></li>
                                 <li>Buka <b>Settings → API Token</b></li>
+                                <li>Wajib centang <b>"Read"</b> dan <b>"Trade"</b></li>
                                 <li>Salin token dan tempel di bawah ini</li>
                             </ol>
                         </div>
@@ -147,17 +148,17 @@
                     </div>
                     <div class="space-y-3">
                         <div>
-                            <label class="text-xs text-dark-400 mb-1 block">Lot Size</label>
-                            <input type="number" id="lotSize" value="0.1" step="0.01" class="w-full">
+                            <label class="text-xs text-dark-400 mb-1 block">Lot / Stake ($)</label>
+                            <input type="number" id="lotSize" value="0.35" step="0.01" class="w-full">
                         </div>
                         <div class="grid grid-cols-2 gap-2">
                             <div>
                                 <label class="text-xs text-dark-400 mb-1 block">SL (pips)</label>
-                                <input type="number" id="stopLoss" value="15" class="w-full">
+                                <input type="number" id="stopLoss" value="15" class="w-full" disabled placeholder="Auto Ticks">
                             </div>
                             <div>
                                 <label class="text-xs text-dark-400 mb-1 block">TP (pips)</label>
-                                <input type="number" id="takeProfit" value="10" class="w-full">
+                                <input type="number" id="takeProfit" value="10" class="w-full" disabled placeholder="Auto Ticks">
                             </div>
                         </div>
                     </div>
@@ -181,7 +182,7 @@
                     <div class="flex items-center justify-between mb-3">
                         <div class="flex items-center gap-2">
                             <i data-lucide="zap" class="w-4 h-4 text-yellow-400"></i>
-                            <h3 class="text-sm font-semibold text-white">Signal Log</h3>
+                            <h3 class="text-sm font-semibold text-white">Signal & Trade Log</h3>
                         </div>
                     </div>
                     <div id="signalLog" class="space-y-2 max-h-[150px] overflow-y-auto text-xs font-mono text-dark-400">
@@ -206,7 +207,7 @@
                     </div>
                     <div class="stat-card rounded-xl p-3 text-center">
                         <span class="text-[10px] text-dark-400">Win Rate</span>
-                        <p class="text-lg font-bold font-mono text-brand-400">0%</p>
+                        <p class="text-lg font-bold font-mono text-brand-400" id="winRateStat">0%</p>
                     </div>
                 </div>
             </aside>
@@ -221,7 +222,13 @@
         let labelHistory = [];
         let simulationInterval = null;
         let isBotRunning = false;
+        let sedangTransaksi = false; // Pengaman Anti-Spamming Order
         const MAX_POINTS = 40;
+
+        // Stat Trading
+        let totalTrades = 0;
+        let totalWins = 0;
+        let currentPnL = 0;
 
         // Inisialisasi Chart.js saat DOM Siap
         document.addEventListener("DOMContentLoaded", () => {
@@ -270,9 +277,9 @@
             const broker = document.getElementById('brokerSelect').value;
             const derivSettings = document.getElementById('derivSettings');
             
-            // Reset koneksi lama jika ada
             if (ws) { ws.close(); }
             clearInterval(simulationInterval);
+            sedangTransaksi = false;
 
             if (broker === 'deriv') {
                 derivSettings.classList.remove('hidden');
@@ -304,13 +311,15 @@
             ws.onopen = () => {
                 document.getElementById('statusText').innerText = 'CONNECTED (DERIV)';
                 document.getElementById('statusDot').className = 'w-2 h-2 rounded-full bg-green-500 pulse-dot';
+                logSignal("🔌 Berhasil terhubung ke WebSocket Deriv.", "green");
                 
-                // Kirim request otentikasi token jika diisi
                 if (token) {
+                    logSignal("🔑 Mengirim Token Otentikasi...", "dark");
                     ws.send(JSON.stringify({ authorize: token }));
+                } else {
+                    logSignal("⚠️ Token kosong! Anda hanya bisa melihat grafik tanpa eksekusi trade.", "red");
                 }
                 
-                // Subscribe ke data tick live berdasarkan simbol terpilih
                 ws.send(JSON.stringify({ ticks: selectedSymbol }));
             };
 
@@ -318,15 +327,34 @@
                 const response = JSON.parse(event.data);
                 
                 if (response.error) {
-                    logSignal(`Error: ${response.error.message}`, 'red');
+                    logSignal(`❌ Error: ${response.error.message}`, 'red');
+                    sedangTransaksi = false; 
                     return;
                 }
 
-                // Jika menerima data tick harga live
+                // 1. Respon Otentikasi Akun Berhasil
+                if (response.msg_type === 'authorize') {
+                    logSignal(`✅ Akun Terverifikasi! ID: ${response.authorize.email}`, 'green');
+                }
+
+                // 2. Menerima Data Tick Live
                 if (response.tick) {
                     const price = response.tick.quote;
                     const time = new Date(response.tick.epoch * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                     updatePriceFeed(price, time);
+                }
+
+                // 3. Konfirmasi Pembelian Kontrak (Trade Terbuka)
+                if (response.msg_type === 'buy') {
+                    logSignal(`🎯 Order Berhasil Diterima Server! ID: ${response.buy.contract_id}`, 'green');
+                    totalTrades++;
+                    document.getElementById('totalTradesStat').innerText = totalTrades;
+                    
+                    // Kunci transaksi dibuka otomatis setelah jeda aman 6 detik (durasi kontrak 5 ticks)
+                    setTimeout(() => {
+                        sedangTransaksi = false;
+                        logSignal("🔄 Bot siap mencari peluang baru...", "dark");
+                    }, 6000);
                 }
             };
 
@@ -334,6 +362,7 @@
                 if(document.getElementById('brokerSelect').value === 'deriv') {
                     document.getElementById('statusText').innerText = 'DISCONNECTED';
                     document.getElementById('statusDot').className = 'w-2 h-2 rounded-full bg-red-500 pulse-dot';
+                    logSignal("🔌 Koneksi WebSocket terputus.", "red");
                 }
             };
         }
@@ -343,12 +372,11 @@
             document.getElementById('currentSymbolLabel').innerText = symbol.toUpperCase();
             document.getElementById('chartTitle').innerText = `${symbol.toUpperCase()} • Real-Time`;
             
-            // Bersihkan data lama saat pindah simbol
             priceHistory.length = 0;
             labelHistory.length = 0;
 
             if (document.getElementById('brokerSelect').value === 'deriv' && ws && ws.readyState === WebSocket.OPEN) {
-                connectToDeriv(); // Re-subscribe dengan simbol baru
+                connectToDeriv(); 
             }
         }
 
@@ -372,12 +400,10 @@
             const formattedPrice = price.toFixed(2);
             const prevPrice = priceHistory[priceHistory.length - 1] || price;
             
-            // Update UI Ticker Atas
             const tickerEl = document.getElementById('tickerPriceDisplay');
             tickerEl.innerText = formattedPrice;
             tickerEl.style.color = price >= prevPrice ? '#4ade80' : '#ef4444';
 
-            // Push ke Array Data Chart
             priceHistory.push(price);
             labelHistory.push(timeLabel);
 
@@ -393,14 +419,91 @@
             }
         }
 
+        // ========================================================
+        // LOGIKA STRATEGI & EKSEKUSI ORDER NYATA
+        // ========================================================
         function executeStrategyLogic(currentPrice) {
             if (priceHistory.length < 5) return;
+            if (sedangTransaksi) return; // Jika sedang dalam trade, tahan strategi
+
             const sma3 = (priceHistory[priceHistory.length-1] + priceHistory[priceHistory.length-2] + priceHistory[priceHistory.length-3]) / 3;
-            if (currentPrice > sma3 + 0.5) {
+            const lotValue = parseFloat(document.getElementById('lotSize').value) || 0.35;
+            const currentSymbol = document.getElementById('symbolSelect').value;
+            const currentBroker = document.getElementById('brokerSelect').value;
+
+            // Sinyal Naik (Rise / CALL)
+            if (currentPrice > sma3 + 0.4) {
                 logSignal(`[BUY SIGNAL] Price ${currentPrice.toFixed(2)} cross above SMA(3)`, 'green');
-            } else if (currentPrice < sma3 - 0.5) {
+                
+                if (currentBroker === 'deriv') {
+                    kirimOrderKeDeriv(currentSymbol, lotValue, 'CALL');
+                } else {
+                    // Eksekusi simulasi offline
+                    simulasiOrderOffline(lotValue, true);
+                }
+            } 
+            // Sinyal Turun (Fall / PUT)
+            else if (currentPrice < sma3 - 0.4) {
                 logSignal(`[SELL SIGNAL] Price ${currentPrice.toFixed(2)} cross below SMA(3)`, 'red');
+                
+                if (currentBroker === 'deriv') {
+                    kirimOrderKeDeriv(currentSymbol, lotValue, 'PUT');
+                } else {
+                    // Eksekusi simulasi offline
+                    simulasiOrderOffline(lotValue, false);
+                }
             }
+        }
+
+        function kirimOrderKeDeriv(simbol, modal, arah) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                logSignal("❌ Gagal Order: Koneksi WebSocket Deriv tidak aktif!", "red");
+                return;
+            }
+
+            sedangTransaksi = true; // Kunci diaktifkan
+
+            // Payload API Kontrak Rise/Fall Durasi 5 Ticks
+            const orderPayload = {
+                "buy": 1,
+                "price": modal,
+                "parameters": {
+                    "amount": modal,
+                    "basis": "stake",
+                    "currency": "USD",
+                    "duration": 5,
+                    "duration_unit": "t",
+                    "proposal": 1,
+                    "symbol": simbol,
+                    "contract_type": arah // 'CALL' = Rise, 'PUT' = Fall
+                }
+            };
+
+            ws.send(JSON.stringify(orderPayload));
+            logSignal(`🚀 Mengirim Kontrak ${arah} ($${modal}) ke server Deriv...`, 'dark');
+        }
+
+        // Simulasi khusus saat broker berada di mode "Internal Simulator"
+        function simulasiOrderOffline(modal, isCall) {
+            sedangTransaksi = true;
+            logSignal(`🎲 [SIMULATOR] Order ${isCall ? 'CALL' : 'PUT'} diproses...`, 'dark');
+            
+            setTimeout(() => {
+                totalTrades++;
+                const isWin = Math.random() > 0.45; // Win rate simulasi acak 55%
+                const profitLoss = isWin ? (modal * 0.95) : -modal;
+                
+                if (isWin) totalWins++;
+                currentPnL += profitLoss;
+
+                document.getElementById('totalTradesStat').innerText = totalTrades;
+                document.getElementById('sessionPnL').innerText = (currentPnL >= 0 ? '+' : '') + `$${currentPnL.toFixed(2)}`;
+                document.getElementById('sessionPnL').className = `text-3xl font-bold font-mono ${currentPnL >= 0 ? 'text-brand-400' : 'text-red-500'}`;
+                document.getElementById('winRateStat').innerText = Math.round((totalWins / totalTrades) * 100) + '%';
+                
+                logSignal(`🎲 [SIMULATOR] Hasil: ${isWin ? '📈 WIN' : '📉 LOSS'} (${profitLoss >= 0 ? '+' : ''}${profitLoss.toFixed(2)})`, isWin ? 'green' : 'red');
+                sedangTransaksi = false;
+            }, 5000);
         }
 
         function toggleBotEngine() {
@@ -413,7 +516,7 @@
                 btn.className = "bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 px-5 py-2 rounded-lg text-sm font-semibold text-white flex items-center gap-2 transition-all";
                 icon.setAttribute('data-lucide', 'square');
                 text.innerText = "Stop Bot";
-                logSignal("⚡ Scalping Bot Engine telah DIKTIFKAN.", 'green');
+                logSignal("⚡ Scalping Bot Engine telah DIAKTIFKAN.", 'green');
             } else {
                 btn.className = "btn-primary px-5 py-2 rounded-lg text-sm font-semibold text-white flex items-center gap-2";
                 icon.setAttribute('data-lucide', 'play');
@@ -428,8 +531,8 @@
             if(logBox.innerHTML.includes('Menunggu kalkulasi')) logBox.innerHTML = '';
             
             const colorMap = {
-                green: 'text-green-400',
-                red: 'text-red-400',
+                green: 'text-green-400 font-semibold',
+                red: 'text-red-400 font-semibold',
                 dark: 'text-gray-400'
             };
 
