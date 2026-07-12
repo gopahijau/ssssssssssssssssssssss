@@ -1,9 +1,11 @@
 //+------------------------------------------------------------------+
 //|            H4_Zone_Retest_M5_Fixed.mq5                           |
-//|  Fixed version with ATR, EMA filter, improved trailing           |
+//|  v1.23 - Bug fixes: magic filter on trailing, cached indicator   |
+//|  handles, ATR validity checks, fixed stale-SL BE bug,            |
+//|  news filter moved off hot path, sell side re-enabled            |
 //+------------------------------------------------------------------+
 #property copyright "2025, phatnomenal"
-#property version   "1.22"
+#property version   "1.23"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -35,10 +37,10 @@ input double BE_MovePoints      = 300.0;
 input int    MagicNumber        = 202503;
 input double MaxSpreadPoints    = 50.0;
 input bool   NormalizePricesOut = true;
-input bool   UseSessionFilter  = true;   // Bật/tắt lọc theo phiên
-input int    SessionStartHour  = 7;      // Giờ bắt đầu (London)
-input int    SessionEndHour    = 22;     // Giờ kết thúc (NY)
-input double ShortLotMultiplier = 0.5; // multiplier cho short orders
+input bool   UseSessionFilter   = true;   // Bật/tắt lọc theo phiên
+input int    SessionStartHour   = 7;      // Giờ bắt đầu (London)
+input int    SessionEndHour     = 22;     // Giờ kết thúc (NY)
+input double ShortLotMultiplier = 0.5;    // multiplier cho short orders
 
 // Zone settings
 input int    ZoneMode           = 0;          // 0 = Daily HL prev, 1 = first N H4 bars
@@ -73,8 +75,17 @@ double breakoutCandleLow  = 0.0;
 datetime breakoutTime = 0;
 datetime lastM5BarTime = 0;
 
+//-------------------- CACHED INDICATOR HANDLES --------------------
+// Fix: handles used to be created/released every tick/bar -> wasteful
+// and, on the ATR-sizing path, unchecked for failure (INVALID_HANDLE),
+// which could send an order with garbage SL/TP. Now created once.
+int hATR_Trail  = INVALID_HANDLE;
+int hATR_Sizing = INVALID_HANDLE;
+int hEMA_Fast   = INVALID_HANDLE;
+int hEMA_Slow   = INVALID_HANDLE;
+
 //------------------------------------------------------------------
-double NormPrice(double price){int digits=(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS);return(NormalizePricesOut?NormalizeDouble(price,digits):price);} 
+double NormPrice(double price){int digits=(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS);return(NormalizePricesOut?NormalizeDouble(price,digits):price);}
 
 //------------------------------------------------------------------
 // Zone update
@@ -98,18 +109,24 @@ bool UpdateZoneIfNeeded(){
          zoneHigh=MathMax(zoneHigh,h);
          zoneLow =MathMin(zoneLow,l);
       }
+      // Fix: if not enough H4 history existed, zoneHigh/zoneLow would be
+      // left at the -DBL_MAX/DBL_MAX sentinel. Guard against that.
+      if(zoneHigh<=-DBL_MAX/2.0 || zoneLow>=DBL_MAX/2.0){
+         zoneHigh=iHigh(_Symbol,PERIOD_D1,1);
+         zoneLow =iLow(_Symbol,PERIOD_D1,1);
+      }
    }
    zoneDayStart=todayStart;
    waitingRetest=false; breakoutDir=0;
    return(true);
 }
+
 //------------------------------------------------------------------
 // Check if current time is inside allowed trading session
 //------------------------------------------------------------------
-
 bool IsInTradingSession()
 {
-   if(!UseSessionFilter) 
+   if(!UseSessionFilter)
       return true;
 
    MqlDateTime tm;
@@ -132,29 +149,89 @@ bool IsInTradingSession()
    return false;
 }
 
-
-
+//------------------------------------------------------------------
+bool IsNewsTime(){
+   if(!UseNewsFilter) return(false);
+   datetime now=TimeCurrent();
+   datetime from_time=now-NewsFilterMinutes*60;
+   datetime to_time=now+NewsFilterMinutes*60;
+   MqlCalendarValue values[];
+   int cnt=CalendarValueHistory(values,from_time,to_time,"","");
+   if(cnt<=0) return(false);
+   for(int i=0;i<cnt;i++){
+      MqlCalendarEvent ev;
+      if(!CalendarEventById(values[i].event_id,ev)) continue;
+      if(ev.importance<CALENDAR_IMPORTANCE_MODERATE) continue;
+      MqlCalendarCountry country; string currency="";
+      if(CalendarCountryById((long)ev.country_id,country)) currency=country.currency;
+      if(StringLen(NewsFilterCurrency)>0 && StringFind(currency,NewsFilterCurrency)==-1) continue;
+      return(true);
+   }
+   return(false);
+}
 
 //------------------------------------------------------------------
-bool IsNewsTime(){if(!UseNewsFilter) return(false); 
-datetime now=TimeCurrent(); datetime from_time=now-NewsFilterMinutes*60; 
-datetime to_time=now+NewsFilterMinutes*60; 
-MqlCalendarValue values[]; 
-int cnt=CalendarValueHistory(values,from_time,to_time,"",""); 
-if(cnt<=0) return(false); for(int i=0;i<cnt;i++){MqlCalendarEvent ev; 
-if(!CalendarEventById(values[i].event_id,ev)) continue; if(ev.importance<CALENDAR_IMPORTANCE_MODERATE) continue;
- MqlCalendarCountry country; string currency="";
-  if(CalendarCountryById((long)ev.country_id,country)) currency=country.currency; if(StringLen(NewsFilterCurrency)>0 && StringFind(currency,NewsFilterCurrency)==-1) continue; return(true);} return(false);} 
+// Fix: original version divided risk money by (distPoints * tickValue),
+// which assumes tick size == _Point. Not true for all instruments.
+// Now uses SYMBOL_TRADE_TICK_SIZE explicitly.
+//------------------------------------------------------------------
+double CalculateLotByRisk(double entry,double sl_price){
+   double balance=AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balance<=0) return(0.0);
+   double riskMoney=balance*RiskPercent/100.0;
+   double tickValue=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
+   double tickSize =SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+   if(tickValue<=0) tickValue=1.0;
+   if(tickSize<=0) tickSize=_Point;
+   double priceDist=MathAbs(entry-sl_price);
+   if(priceDist<=0) return(0.0);
+   double moneyPerLot=(priceDist/tickSize)*tickValue;
+   if(moneyPerLot<=0) return(0.0);
+   double lot=riskMoney/moneyPerLot;
+   double minVol=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double maxVol=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
+   double volStep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+   if(volStep<=0.0) volStep=0.01;
+   if(minVol>0.0) lot=MathMax(lot,minVol);
+   if(maxVol>0.0) lot=MathMin(lot,maxVol);
+   int steps=(int)MathFloor(lot/volStep);
+   if(steps<1) steps=1;
+   lot=steps*volStep;
+   return(NormalizeDouble(lot,2));
+}
 
 //------------------------------------------------------------------
-double CalculateLotByRisk(double entry,double sl_price){double balance=AccountInfoDouble(ACCOUNT_BALANCE); if(balance<=0) return(0.0); double riskMoney=balance*RiskPercent/100.0; double tickValue=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE); if(tickValue<=0) tickValue=1.0; double distPoints=MathAbs(entry-sl_price)/_Point; if(distPoints<=0) return(0.0); double lot=riskMoney/(distPoints*tickValue); double minVol=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN); double maxVol=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX); double volStep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP); if(volStep<=0.0) volStep=0.01; if(minVol>0.0) lot=MathMax(lot,minVol); if(maxVol>0.0) lot=MathMin(lot,maxVol); int steps=(int)MathFloor(lot/volStep); if(steps<1) steps=1; lot=steps*volStep; return(NormalizeDouble(lot,2));}
+bool HasOpenPosition(const string symbol){
+   int total=(int)PositionsTotal();
+   for(int idx=0;idx<total;idx++){
+      if(m_position.SelectByIndex(idx)){
+         if(m_position.Symbol()==symbol){
+            ulong pos_magic=(ulong)m_position.Magic();
+            if(MagicNumber==0||pos_magic==(ulong)MagicNumber) return(true);
+         }
+      }
+   }
+   return(false);
+}
 
 //------------------------------------------------------------------
-bool HasOpenPosition(const string symbol){int total=(int)PositionsTotal(); for(int idx=0;idx<total;idx++){if(m_position.SelectByIndex(idx)){if(m_position.Symbol()==symbol){ulong pos_magic=(ulong)m_position.Magic(); if(MagicNumber==0||pos_magic==(ulong)MagicNumber) return(true);}}} return(false);} 
+bool CheckMarketConditions(){
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double point=SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+   if(point<=0.0) point=_Point;
+   double spreadPoints=(ask-bid)/point;
+   if(MaxSpreadPoints>0.0 && spreadPoints>MaxSpreadPoints){return(false);}
+   return(true);
+}
 
 //------------------------------------------------------------------
-bool CheckMarketConditions(){double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK); double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID); double point=SymbolInfoDouble(_Symbol,SYMBOL_POINT); if(point<=0.0) point=_Point; double spreadPoints=(ask-bid)/point; if(MaxSpreadPoints>0.0 && spreadPoints>MaxSpreadPoints){return(false);} return(true);} 
-
+// Fix 1: now filters by Magic Number, same as HasOpenPosition() does -
+// previously this touched ANY position on the symbol, including manual
+// trades or positions opened by other EAs.
+// Fix 2: after PositionModify() succeeds, the local "sl" variable is
+// refreshed so the break-even check right below uses the fresh value
+// instead of a stale one from before the trailing update.
 //------------------------------------------------------------------
 void ManageTrailingStops(){
    if(!UseTrailingStop) return;
@@ -162,6 +239,9 @@ void ManageTrailingStops(){
    for(int idx=0; idx<total; idx++){
       if(!m_position.SelectByIndex(idx)) continue;
       if(m_position.Symbol()!=_Symbol) continue;
+      ulong pos_magic=(ulong)m_position.Magic();
+      if(MagicNumber!=0 && pos_magic!=(ulong)MagicNumber) continue;
+
       long type=(long)m_position.Type();
       ulong ticket=(ulong)m_position.Ticket();
       double open_price=m_position.PriceOpen();
@@ -175,63 +255,120 @@ void ManageTrailingStops(){
          double profit_points=(bid-open_price)/point;
          if(profit_points>TrailingStart){
             double new_sl=sl;
-            if(TrailingMode==0) new_sl=bid-TrailingStep*point;
-            else{
-               int handleATR=iATR(_Symbol,ATR_Trail_Timeframe,ATR_Trail_Period);
-               double buf[]; if(CopyBuffer(handleATR,0,0,1,buf)>0){new_sl=bid-ATR_Trail_Mult*buf[0];}
-               IndicatorRelease(handleATR);
+            if(TrailingMode==0){
+               new_sl=bid-TrailingStep*point;
+            } else if(hATR_Trail!=INVALID_HANDLE){
+               double buf[];
+               if(CopyBuffer(hATR_Trail,0,0,1,buf)>0) new_sl=bid-ATR_Trail_Mult*buf[0];
             }
-            if(new_sl>sl+_Point) trade.PositionModify(ticket,NormPrice(new_sl),tp);
+            if(new_sl>sl+_Point){
+               if(trade.PositionModify(ticket,NormPrice(new_sl),tp)) sl=new_sl;
+            }
          }
-         if(profit_points>=BE_MovePoints && sl<open_price){trade.PositionModify(ticket,NormPrice(open_price),tp);} 
+         if(profit_points>=BE_MovePoints && sl<open_price){
+            if(trade.PositionModify(ticket,NormPrice(open_price),tp)) sl=open_price;
+         }
       }
       if(type==POSITION_TYPE_SELL){
          double profit_points=(open_price-ask)/point;
          if(profit_points>TrailingStart){
             double new_sl=sl;
-            if(TrailingMode==0) new_sl=ask+TrailingStep*point;
-            else{
-               int handleATR=iATR(_Symbol,ATR_Trail_Timeframe,ATR_Trail_Period);
-               double buf[]; if(CopyBuffer(handleATR,0,0,1,buf)>0){new_sl=ask+ATR_Trail_Mult*buf[0];}
-               IndicatorRelease(handleATR);
+            if(TrailingMode==0){
+               new_sl=ask+TrailingStep*point;
+            } else if(hATR_Trail!=INVALID_HANDLE){
+               double buf[];
+               if(CopyBuffer(hATR_Trail,0,0,1,buf)>0) new_sl=ask+ATR_Trail_Mult*buf[0];
             }
-            if(sl==0.0||new_sl<sl-_Point) trade.PositionModify(ticket,NormPrice(new_sl),tp);
+            if(sl==0.0||new_sl<sl-_Point){
+               if(trade.PositionModify(ticket,NormPrice(new_sl),tp)) sl=new_sl;
+            }
          }
-         if(profit_points>=BE_MovePoints && (sl==0.0||sl>open_price)){trade.PositionModify(ticket,NormPrice(open_price),tp);} 
+         if(profit_points>=BE_MovePoints && (sl==0.0||sl>open_price)){
+            if(trade.PositionModify(ticket,NormPrice(open_price),tp)) sl=open_price;
+         }
       }
    }
 }
 
 //------------------------------------------------------------------
-int OnInit(){trade.SetExpertMagicNumber((ulong)MagicNumber); trade.SetDeviationInPoints(Slippage); UpdateZoneIfNeeded(); return(INIT_SUCCEEDED);} 
+int OnInit(){
+   trade.SetExpertMagicNumber((ulong)MagicNumber);
+   trade.SetDeviationInPoints(Slippage);
+
+   // Fix: create indicator handles once instead of every tick/bar.
+   hATR_Trail = iATR(_Symbol,ATR_Trail_Timeframe,ATR_Trail_Period);
+   hATR_Sizing= iATR(_Symbol,ATR_Timeframe,ATR_Period);
+   hEMA_Fast  = iMA(_Symbol,EMA_Timeframe,EMA_Fast,0,MODE_EMA,PRICE_CLOSE);
+   hEMA_Slow  = iMA(_Symbol,EMA_Timeframe,EMA_Slow,0,MODE_EMA,PRICE_CLOSE);
+
+   if(UseTrailingStop && TrailingMode==1 && hATR_Trail==INVALID_HANDLE)
+      Print("Warning: failed to create ATR trailing handle");
+   if(UseATRSizing && hATR_Sizing==INVALID_HANDLE)
+      Print("Warning: failed to create ATR sizing handle");
+   if(UseEMAFilter && (hEMA_Fast==INVALID_HANDLE || hEMA_Slow==INVALID_HANDLE))
+      Print("Warning: failed to create EMA filter handle(s)");
+
+   UpdateZoneIfNeeded();
+   return(INIT_SUCCEEDED);
+}
+
+//------------------------------------------------------------------
+void OnDeinit(const int reason){
+   if(hATR_Trail!=INVALID_HANDLE)  IndicatorRelease(hATR_Trail);
+   if(hATR_Sizing!=INVALID_HANDLE) IndicatorRelease(hATR_Sizing);
+   if(hEMA_Fast!=INVALID_HANDLE)   IndicatorRelease(hEMA_Fast);
+   if(hEMA_Slow!=INVALID_HANDLE)   IndicatorRelease(hEMA_Slow);
+}
 
 //------------------------------------------------------------------
 void OnTick(){
- if(!IsInTradingSession())
+   if(!IsInTradingSession())
       return;
-UpdateZoneIfNeeded(); if(UseNewsFilter && IsNewsTime()) return; datetime currentM5Open=(datetime)iTime(_Symbol,PERIOD_M5,0); if(currentM5Open==0) return; if(currentM5Open==lastM5BarTime){ManageTrailingStops(); return;} lastM5BarTime=currentM5Open; double m5_open=iOpen(_Symbol,PERIOD_M5,1); double m5_close=iClose(_Symbol,PERIOD_M5,1); double m5_high=iHigh(_Symbol,PERIOD_M5,1); double m5_low=iLow(_Symbol,PERIOD_M5,1); datetime m5_close_time=(datetime)iTime(_Symbol,PERIOD_M5,1);
+
+   UpdateZoneIfNeeded();
+
+   datetime currentM5Open=(datetime)iTime(_Symbol,PERIOD_M5,0);
+   if(currentM5Open==0) return;
+   if(currentM5Open==lastM5BarTime){ManageTrailingStops(); return;}
+   lastM5BarTime=currentM5Open;
+
+   // Fix: news filter moved here so it only runs once per new M5 bar,
+   // not on every single tick.
+   if(UseNewsFilter && IsNewsTime()) return;
+
+   double m5_open=iOpen(_Symbol,PERIOD_M5,1);
+   double m5_close=iClose(_Symbol,PERIOD_M5,1);
+   double m5_high=iHigh(_Symbol,PERIOD_M5,1);
+   double m5_low=iLow(_Symbol,PERIOD_M5,1);
+   datetime m5_close_time=(datetime)iTime(_Symbol,PERIOD_M5,1);
 
    double bodySize=MathAbs(m5_close-m5_open)/_Point;
    double rangeSize=(m5_high-m5_low)/_Point;
    bool bodyOk=(rangeSize>0 && bodySize>=BreakoutBodyPct/100.0*rangeSize);
    bool pointOk=(MathAbs(m5_close-m5_open)>=BreakoutMinPoints*_Point);
 
-   if(m5_close>zoneHigh && m5_open<=zoneHigh && (bodyOk||pointOk)) {waitingRetest=true; breakoutDir=1; breakoutCandleHigh=m5_high; breakoutCandleLow=m5_low; breakoutTime=m5_close_time;} 
-   else if(m5_close<zoneLow && m5_open>=zoneLow && (bodyOk||pointOk)) {waitingRetest=true; breakoutDir=-1; breakoutCandleHigh=m5_high; breakoutCandleLow=m5_low; breakoutTime=m5_close_time;}
+   if(m5_close>zoneHigh && m5_open<=zoneHigh && (bodyOk||pointOk)){
+      waitingRetest=true; breakoutDir=1;
+      breakoutCandleHigh=m5_high; breakoutCandleLow=m5_low; breakoutTime=m5_close_time;
+   }
+   else if(m5_close<zoneLow && m5_open>=zoneLow && (bodyOk||pointOk)){
+      waitingRetest=true; breakoutDir=-1;
+      breakoutCandleHigh=m5_high; breakoutCandleLow=m5_low; breakoutTime=m5_close_time;
+   }
 
    if(waitingRetest && TimeCurrent()-breakoutTime>MaxWaitSeconds){waitingRetest=false; breakoutDir=0;}
 
    if(waitingRetest && breakoutDir!=0){
       if(!CheckMarketConditions()) return;
+
       // EMA filter
       if(UseEMAFilter){
-         int hFast=iMA(_Symbol,EMA_Timeframe,EMA_Fast,0,MODE_EMA,PRICE_CLOSE);
-         int hSlow=iMA(_Symbol,EMA_Timeframe,EMA_Slow,0,MODE_EMA,PRICE_CLOSE);
          double emaFast=0.0, emaSlow=0.0;
          double bf[],bs[];
-         if(hFast>0 && CopyBuffer(hFast,0,1,1,bf)>0) emaFast=bf[0];
-         if(hSlow>0 && CopyBuffer(hSlow,0,1,1,bs)>0) emaSlow=bs[0];
-         IndicatorRelease(hFast); IndicatorRelease(hSlow);
+         bool gotFast=(hEMA_Fast!=INVALID_HANDLE && CopyBuffer(hEMA_Fast,0,1,1,bf)>0);
+         bool gotSlow=(hEMA_Slow!=INVALID_HANDLE && CopyBuffer(hEMA_Slow,0,1,1,bs)>0);
+         if(!gotFast || !gotSlow) return; // Fix: don't trade on missing EMA data
+         emaFast=bf[0]; emaSlow=bs[0];
          double price=iClose(_Symbol,EMA_Timeframe,0);
          if(breakoutDir==1 && !(price>emaFast && price>emaSlow)){return;}
          if(breakoutDir==-1 && !(price<emaFast && price<emaSlow)){return;}
@@ -239,13 +376,62 @@ UpdateZoneIfNeeded(); if(UseNewsFilter && IsNewsTime()) return; datetime current
 
       double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
       double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+
       if(breakoutDir==1 && bid<=zoneHigh){
          if(OnlyOnePosition && HasOpenPosition(_Symbol)){waitingRetest=false; breakoutDir=0; return;}
-         double entry=zoneHigh; double sl, tp; if(UseATRSizing){int h=iATR(_Symbol,ATR_Timeframe,ATR_Period); double buf[]; if(CopyBuffer(h,0,1,1,buf)>0){sl=entry-ATR_SL_Mult*buf[0]; tp=entry+ATR_TP_Mult*buf[0];} IndicatorRelease(h);} else {sl=breakoutCandleLow; tp=entry+1.5*(entry-sl);} entry=NormPrice(entry); sl=NormPrice(sl); tp=NormPrice(tp); double vol=UseRiskPercent?CalculateLotByRisk(entry,sl):Lots; if(vol>0) trade.Buy(vol,_Symbol,0.0,sl,tp,TradeComment); waitingRetest=false; breakoutDir=0;}
-      /*else if(breakoutDir==-1 && ask>=zoneLow){
+
+         double entry=zoneHigh;
+         double sl=0.0, tp=0.0;
+         bool sizingOk=true;
+
+         if(UseATRSizing){
+            double buf[];
+            if(hATR_Sizing!=INVALID_HANDLE && CopyBuffer(hATR_Sizing,0,1,1,buf)>0){
+               sl=entry-ATR_SL_Mult*buf[0];
+               tp=entry+ATR_TP_Mult*buf[0];
+            } else {
+               sizingOk=false; // Fix: don't fire an order with garbage SL/TP
+            }
+         } else {
+            sl=breakoutCandleLow;
+            tp=entry+1.5*(entry-sl);
+         }
+
+         if(sizingOk && sl>0 && tp>entry){
+            entry=NormPrice(entry); sl=NormPrice(sl); tp=NormPrice(tp);
+            double vol=UseRiskPercent?CalculateLotByRisk(entry,sl):Lots;
+            if(vol>0) trade.Buy(vol,_Symbol,0.0,sl,tp,TradeComment);
+         }
+         waitingRetest=false; breakoutDir=0;
+      }
+      else if(breakoutDir==-1 && ask>=zoneLow){
          if(OnlyOnePosition && HasOpenPosition(_Symbol)){waitingRetest=false; breakoutDir=0; return;}
-         double entry=zoneLow; double sl, tp; if(UseATRSizing){int h=iATR(_Symbol,ATR_Timeframe,ATR_Period); double buf[]; if(CopyBuffer(h,0,1,1,buf)>0){sl=entry+ATR_SL_Mult*buf[0]; tp=entry-ATR_TP_Mult*buf[0];} IndicatorRelease(h);} else {sl=breakoutCandleHigh; tp=entry-1.5*(sl-entry);} entry=NormPrice(entry); sl=NormPrice(sl); tp=NormPrice(tp);double volBase = UseRiskPercent ? CalculateLotByRisk(entry,sl) : Lots;
-         double vol = (breakoutDir == -1) ? volBase * ShortLotMultiplier : volBase; if(vol>0) trade.Sell(vol,_Symbol,0.0,sl,tp,TradeComment); waitingRetest=false; breakoutDir=0;}*/
+
+         double entry=zoneLow;
+         double sl=0.0, tp=0.0;
+         bool sizingOk=true;
+
+         if(UseATRSizing){
+            double buf[];
+            if(hATR_Sizing!=INVALID_HANDLE && CopyBuffer(hATR_Sizing,0,1,1,buf)>0){
+               sl=entry+ATR_SL_Mult*buf[0];
+               tp=entry-ATR_TP_Mult*buf[0];
+            } else {
+               sizingOk=false;
+            }
+         } else {
+            sl=breakoutCandleHigh;
+            tp=entry-1.5*(sl-entry);
+         }
+
+         if(sizingOk && sl>entry && tp<entry && tp>0){
+            entry=NormPrice(entry); sl=NormPrice(sl); tp=NormPrice(tp);
+            double volBase=UseRiskPercent?CalculateLotByRisk(entry,sl):Lots;
+            double vol=volBase*ShortLotMultiplier;
+            if(vol>0) trade.Sell(vol,_Symbol,0.0,sl,tp,TradeComment);
+         }
+         waitingRetest=false; breakoutDir=0;
+      }
    }
    ManageTrailingStops();
 }
